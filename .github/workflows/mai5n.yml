@@ -64,41 +64,27 @@ jobs:
 
       - name: Install Tailscale
         run: |
-          # استخدام الرابط الصحيح (بدون -latest في اسم الملف)
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.78.3-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
+          Write-Host "Installing Tailscale using Chocolatey..."
           
-          Write-Host "Downloading Tailscale from: $tsUrl"
-          
-          # محاولة التحميل مع retry في حالة الفشل
-          $maxRetries = 3
-          $retryCount = 0
-          $downloaded = $false
-          
-          while (-not $downloaded -and $retryCount -lt $maxRetries) {
-              try {
-                  Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing -TimeoutSec 300
-                  $downloaded = $true
-                  Write-Host "Download successful!"
-              } catch {
-                  $retryCount++
-                  Write-Host "Download failed, retry $retryCount of $maxRetries..."
-                  Start-Sleep -Seconds 5
-              }
+          # تثبيت Chocolatey إذا لم يكن مثبتاً
+          if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+              Write-Host "Installing Chocolatey..."
+              Set-ExecutionPolicy Bypass -Scope Process -Force
+              [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+              Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+              
+              # تحديث متغيرات البيئة
+              $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           }
           
-          if (-not $downloaded) {
-              Write-Error "Failed to download Tailscale after $maxRetries attempts"
-              exit 1
-          }
+          # تثبيت Tailscale عبر Chocolatey
+          Write-Host "Installing Tailscale package..."
+          choco install tailscale -y --no-progress --limit-output
           
-          Write-Host "Installing Tailscale..."
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          # تحديث متغيرات البيئة مرة أخرى
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           
-          Write-Host "Cleaning up installer..."
-          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
-          
-          # الانتظار لضمان اكتمال التثبيت
+          Write-Host "Tailscale installation completed!"
           Start-Sleep -Seconds 10
 
       - name: Establish Tailscale Connection
