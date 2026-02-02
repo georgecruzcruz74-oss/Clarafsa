@@ -145,6 +145,65 @@ jobs:
           Write-Host "========================================" -ForegroundColor Green
           Write-Host ""
 
+      - name: Install MuMu Player 6 (No VT Required)
+        run: |
+          Write-Host "Installing MuMu Player 6 (compatible without VT)..." -ForegroundColor Cyan
+          
+          # رابط النسخة القديمة التي لا تحتاج VT
+          $mumuUrl = "https://dl-us.ldmnq.com/download/packages/NemuPlayer_1.2.8.1_Setup_1710.exe"
+          $installerPath = "$env:TEMP\mumuplayer6.exe"
+          
+          try {
+              Write-Host "Downloading MuMu Player 6..."
+              Invoke-WebRequest -Uri $mumuUrl -OutFile $installerPath -UseBasicParsing -TimeoutSec 600
+              
+              Write-Host "Installing MuMu Player 6 (this may take 2-3 minutes)..."
+              # تثبيت صامت
+              Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait -NoNewWindow
+              
+              Write-Host "Waiting for installation to complete..."
+              Start-Sleep -Seconds 30
+              
+              # البحث عن مسار التثبيت
+              $possiblePaths = @(
+                  "C:\Program Files\Nemu",
+                  "C:\Program Files (x86)\Nemu",
+                  "$env:ProgramFiles\Nemu",
+                  "${env:ProgramFiles(x86)}\Nemu"
+              )
+              
+              $mumuInstalled = $false
+              foreach ($path in $possiblePaths) {
+                  if (Test-Path $path) {
+                      Write-Host "MuMu Player 6 installed at: $path" -ForegroundColor Green
+                      $mumuInstalled = $true
+                      break
+                  }
+              }
+              
+              if ($mumuInstalled) {
+                  Write-Host "MuMu Player 6 installation completed successfully!" -ForegroundColor Green
+                  
+                  # تشغيل MuMu Player
+                  $mumuExe = Get-ChildItem -Path $path -Filter "Nemu*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                  if ($mumuExe) {
+                      Write-Host "Starting MuMu Player..."
+                      Start-Process -FilePath $mumuExe.FullName -ErrorAction SilentlyContinue
+                      Start-Sleep -Seconds 20
+                      Write-Host "MuMu Player is now running!" -ForegroundColor Green
+                  }
+              } else {
+                  Write-Warning "Could not verify MuMu installation, but it may still be installed"
+              }
+              
+              # حذف ملف التثبيت
+              Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+              
+          } catch {
+              Write-Warning "MuMu installation encountered an issue: $_"
+              Write-Host "You can install it manually after connecting via RDP" -ForegroundColor Yellow
+          }
+
       - name: Maintain Connection
         run: |
           # إبقاء السيرفر يعمل مع عرض الحالة كل 5 دقائق
