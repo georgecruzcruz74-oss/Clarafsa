@@ -5,7 +5,7 @@ on:
 
 jobs:
   secure-rdp:
-    runs-on: windows-2019 # نسخة مستقرة وخفيفة تعادل ويندوز 10
+    runs-on: windows-2019
     timeout-minutes: 3600
 
     steps:
@@ -17,20 +17,35 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
 
           # إعداد جدار الحماية للسماح بالاتصال
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" -ErrorAction SilentlyContinue
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
 
           # إعادة تشغيل خدمة RDP لتطبيق التغييرات
           Restart-Service -Name TermService -Force
 
-      - name: Optimize Visuals for Slow Internet
+      - name: Optimize for Ultra-Low Bandwidth
         run: |
-          # تعطيل الخلفية لجعل نقل الصور أسرع
-          Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name Wallpaper -Value ""
+          # تعطيل الخلفية تماماً
+          Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name Wallpaper -Value "" -Force
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name Wallpaper -Value "" -Force
           
-          # تعطيل المؤثرات البصرية التي تستهلك البيانات
-          Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name UserPreferencesMask -Value ([byte[]](0x90,0x12,0x03,0x80))
-          Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name VisualFXSetting -Value 2
+          # تعطيل كل المؤثرات البصرية
+          Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name UserPreferencesMask -Value ([byte[]](0x90,0x12,0x03,0x80)) -Force
+          Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name VisualFXSetting -Value 2 -Force
+          
+          # تقليل جودة الألوان لـ 16 بت (توفير 50% من البيانات)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "ColorDepth" -Value 2 -Force
+          
+          # تعطيل Font Smoothing
+          Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name FontSmoothing -Value 0 -Force
+          
+          # تعطيل Themes
+          Stop-Service -Name Themes -Force -ErrorAction SilentlyContinue
+          Set-Service -Name Themes -StartupType Disabled -ErrorAction SilentlyContinue
+          
+          # تعطيل Windows Search لتقليل استهلاك الموارد
+          Stop-Service -Name WSearch -Force -ErrorAction SilentlyContinue
+          Set-Service -Name WSearch -StartupType Disabled -ErrorAction SilentlyContinue
 
       - name: Create RDP User with Fixed Password
         run: |
@@ -39,7 +54,7 @@ jobs:
           
           # إنشاء المستخدم وتعيينه كمسؤول
           if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
           } else {
               Set-LocalUser -Name "RDP" -Password $securePass
           }
@@ -49,51 +64,108 @@ jobs:
 
       - name: Install Tailscale
         run: |
-          # استخدام الرابط المباشر الصحيح لتجنب خطأ 404
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          # استخدام الرابط الصحيح (بدون -latest في اسم الملف)
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.78.3-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
           
-          Write-Host "Downloading Tailscale..."
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
+          Write-Host "Downloading Tailscale from: $tsUrl"
           
-          Write-Host "Installing..."
+          # محاولة التحميل مع retry في حالة الفشل
+          $maxRetries = 3
+          $retryCount = 0
+          $downloaded = $false
+          
+          while (-not $downloaded -and $retryCount -lt $maxRetries) {
+              try {
+                  Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing -TimeoutSec 300
+                  $downloaded = $true
+                  Write-Host "Download successful!"
+              } catch {
+                  $retryCount++
+                  Write-Host "Download failed, retry $retryCount of $maxRetries..."
+                  Start-Sleep -Seconds 5
+              }
+          }
+          
+          if (-not $downloaded) {
+              Write-Error "Failed to download Tailscale after $maxRetries attempts"
+              exit 1
+          }
+          
+          Write-Host "Installing Tailscale..."
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          
+          Write-Host "Cleaning up installer..."
+          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+          
+          # الانتظار لضمان اكتمال التثبيت
+          Start-Sleep -Seconds 10
 
       - name: Establish Tailscale Connection
         run: |
-          # تفعيل الاتصال باستخدام المفتاح السري الخاص بك
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          # التحقق من وجود Tailscale
+          $tailscalePath = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (-not (Test-Path $tailscalePath)) {
+              Write-Error "Tailscale executable not found at: $tailscalePath"
+              exit 1
+          }
           
+          Write-Host "Starting Tailscale connection..."
+          
+          # تفعيل الاتصال باستخدام المفتاح السري
+          & $tailscalePath up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --accept-routes
+          
+          # الانتظار للحصول على IP
           $tsIP = $null
           $retries = 0
-          while (-not $tsIP -and $retries -lt 12) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          $maxRetries = 20
+          
+          while (-not $tsIP -and $retries -lt $maxRetries) {
+              Start-Sleep -Seconds 3
+              $tsIP = & $tailscalePath ip -4 2>$null
+              if ($tsIP) {
+                  $tsIP = $tsIP.Trim()
+              }
               if (-not $tsIP) {
-                  Write-Host "Waiting for IP address..."
-                  Start-Sleep -Seconds 5
+                  Write-Host "Waiting for Tailscale IP... (attempt $($retries + 1)/$maxRetries)"
                   $retries++
               }
           }
           
           if (-not $tsIP) {
-              Write-Error "Failed to get Tailscale IP."
+              Write-Error "Failed to get Tailscale IP after $maxRetries attempts"
               exit 1
           }
+          
+          Write-Host "Tailscale IP obtained: $tsIP"
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
       
+      - name: Display Connection Info
+        run: |
+          Write-Host ""
+          Write-Host "========================================" -ForegroundColor Green
+          Write-Host "   RDP جاهز للاتصال" -ForegroundColor Cyan
+          Write-Host "========================================" -ForegroundColor Green
+          Write-Host "العنوان: $env:TAILSCALE_IP" -ForegroundColor Yellow
+          Write-Host "المستخدم: RDP" -ForegroundColor Yellow
+          Write-Host "كلمة المرور: Yahia@2yahiA" -ForegroundColor Yellow
+          Write-Host "========================================" -ForegroundColor Green
+          Write-Host ""
+          Write-Host "ملاحظات مهمة للاتصال بنت ضعيف:" -ForegroundColor Magenta
+          Write-Host "1. استخدم دقة 1024x768 أو أقل" -ForegroundColor White
+          Write-Host "2. فعّل خيار 'Low Speed Connection' في إعدادات RDP" -ForegroundColor White
+          Write-Host "3. عطّل: الخلفية، القوائم، الرسوميات" -ForegroundColor White
+          Write-Host "4. استخدم 16-bit colors بدلاً من 32-bit" -ForegroundColor White
+          Write-Host "========================================" -ForegroundColor Green
+          Write-Host ""
+
       - name: Maintain Connection
         run: |
-          Write-Host "`n===================================="
-          Write-Host "   RDP IS READY FOR CONNECTION"
-          Write-Host "===================================="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: Yahia@2yahiA"
-          Write-Host "====================================`n"
-          
-          # إبقاء السيرفر يعمل
+          # إبقاء السيرفر يعمل مع عرض الحالة كل 5 دقائق
+          $counter = 0
           while ($true) {
-              Write-Host "[$(Get-Date)] Connection Active..."
+              $counter++
+              $uptime = [math]::Round((Get-Date) - (gcim Win32_OperatingSystem).LastBootUpTime).TotalMinutes
+              Write-Host "[$counter] [$(Get-Date -Format 'HH:mm:ss')] الاتصال نشط - Uptime: $uptime دقيقة" -ForegroundColor Green
               Start-Sleep -Seconds 300
           }
