@@ -151,7 +151,8 @@ jobs:
           $counter = 0
           while ($true) {
               $counter++
-              $uptime = [math]::Round((Get-Date) - (gcim Win32_OperatingSystem).LastBootUpTime).TotalMinutes
+              $uptimeMinutes = ((Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalMinutes
+              $uptime = [math]::Round($uptimeMinutes, 1)
               Write-Host "[$counter] [$(Get-Date -Format 'HH:mm:ss')] الاتصال نشط - Uptime: $uptime دقيقة" -ForegroundColor Green
               Start-Sleep -Seconds 300
           }
